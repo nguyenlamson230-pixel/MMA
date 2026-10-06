@@ -9,3 +9,757 @@
     <p>Đây là trang web đầu tiên của tôi.</p>
 </body>
 </html>
+npx create-next-app@latest ecommerce --typescript --tailwind --eslint --app
+cd ecommerce
+
+npm install prisma @prisma/client
+npm install bcryptjs jsonwebtoken
+npm install lucide-react
+npm install zod
+npm install zustand
+
+npx prisma init
+DATABASE_URL="postgresql://postgres:password@localhost:5432/ecommerce"
+
+JWT_SECRET="your-super-secret-key"
+
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPING
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  password     String
+  phone        String?
+  role         Role      @default(USER)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  orders       Order[]
+  reviews      Review[]
+  addresses    Address[]
+}
+
+model Address {
+  id          String   @id @default(cuid())
+  userId      String
+  receiver    String
+  phone       String
+  address     String
+  city        String
+  district    String?
+  ward        String?
+  isDefault   Boolean  @default(false)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders      Order[]
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  image       String?
+  createdAt   DateTime  @default(now())
+
+  products    Product[]
+}
+
+model Product {
+  id          String          @id @default(cuid())
+  name        String
+  slug        String          @unique
+  description String
+  price       Decimal         @db.Decimal(12, 2)
+  salePrice   Decimal?        @db.Decimal(12, 2)
+  stock       Int             @default(0)
+  sku         String          @unique
+  image       String
+  active      Boolean         @default(true)
+  featured    Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  categoryId  String
+  category    Category        @relation(fields: [categoryId], references: [id])
+
+  images      ProductImage[]
+  variants    ProductVariant[]
+  reviews     Review[]
+  orderItems  OrderItem[]
+
+  @@index([categoryId])
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  url       String
+  productId String
+
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  name      String
+  value     String
+  price     Decimal? @db.Decimal(12, 2)
+  stock     Int      @default(0)
+  productId String
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  userId    String
+  productId String
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+}
+
+model Coupon {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  percentage  Int?
+  amount      Decimal? @db.Decimal(12, 2)
+  minOrder    Decimal? @db.Decimal(12, 2)
+  maxUses     Int?
+  usedCount   Int      @default(0)
+  expiresAt   DateTime?
+  active      Boolean  @default(true)
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  orderNumber     String        @unique
+  subtotal        Decimal       @db.Decimal(12, 2)
+  shippingFee     Decimal       @db.Decimal(12, 2)
+  discount        Decimal       @default(0) @db.Decimal(12, 2)
+  total           Decimal       @db.Decimal(12, 2)
+
+  status          OrderStatus   @default(PENDING)
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   String
+
+  note            String?
+
+  userId          String
+  addressId       String
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user            User          @relation(fields: [userId], references: [id])
+  address         Address       @relation(fields: [addressId], references: [id])
+  items           OrderItem[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  quantity    Int
+  price       Decimal  @db.Decimal(12, 2)
+
+  orderId     String
+  productId   String
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+}
+
+Chạy migration:
+
+npx prisma migrate dev --name init
+npx prisma generate
+
+4. Prisma client lib/db.ts
+import { PrismaClient } from "@prisma/client";
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
+
+export const db =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: ["error"],
+  });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = db;
+}
+
+5. API lấy sản phẩm
+Tạo:
+
+app/api/products/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+
+    const search = searchParams.get("search") || "";
+    const category = searchParams.get("category");
+    const featured = searchParams.get("featured");
+
+    const products = await db.product.findMany({
+      where: {
+        active: true,
+
+        ...(search
+          ? {
+              OR: [
+                {
+                  name: {
+                    contains: search,
+                    mode: "insensitive",
+                  },
+                },
+                {
+                  description: {
+                    contains: search,
+                    mode: "insensitive",
+                  },
+                },
+              ],
+            }
+          : {}),
+
+        ...(category
+          ? {
+              category: {
+                slug: category,
+              },
+            }
+          : {}),
+
+        ...(featured === "true"
+          ? {
+              featured: true,
+            }
+          : {}),
+      },
+
+      include: {
+        category: true,
+        images: true,
+        variants: true,
+      },
+
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    return NextResponse.json(products);
+  } catch {
+    return NextResponse.json(
+      { message: "Không thể lấy sản phẩm" },
+      { status: 500 }
+    );
+  }
+}
+
+6. Trang chủ app/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { ShoppingCart, Search } from "lucide-react";
+
+type Product = {
+  id: string;
+  name: string;
+  slug: string;
+  price: string;
+  salePrice: string | null;
+  image: string;
+};
+
+export default function HomePage() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    fetch("/api/products")
+      .then((res) => res.json())
+      .then(setProducts);
+  }, []);
+
+  async function handleSearch() {
+    const res = await fetch(
+      `/api/products?search=${encodeURIComponent(search)}`
+    );
+
+    const data = await res.json();
+    setProducts(data);
+  }
+
+  return (
+    <main className="min-h-screen bg-gray-50">
+      <header className="sticky top-0 z-50 border-b bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <Link
+            href="/"
+            className="text-2xl font-bold text-blue-600"
+          >
+            SHOPVN
+          </Link>
+
+          <nav className="hidden gap-8 md:flex">
+            <Link href="/">Trang chủ</Link>
+            <Link href="/products">Sản phẩm</Link>
+            <Link href="/categories">Danh mục</Link>
+          </nav>
+
+          <div className="flex items-center gap-4">
+            <Link href="/cart">
+              <ShoppingCart />
+            </Link>
+
+            <Link
+              href="/login"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-white"
+            >
+              Đăng nhập
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <section className="bg-blue-600 py-24 text-white">
+        <div className="mx-auto max-w-7xl px-6">
+          <h1 className="max-w-3xl text-5xl font-bold">
+            Mua sắm đơn giản.
+            <br />
+            Giá tốt mỗi ngày.
+          </h1>
+
+          <p className="mt-6 text-lg text-blue-100">
+            Khám phá hàng nghìn sản phẩm chất lượng.
+          </p>
+
+          <div className="mt-8 flex max-w-xl overflow-hidden rounded-xl bg-white">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSearch();
+              }}
+              placeholder="Tìm kiếm sản phẩm..."
+              className="flex-1 px-5 py-4 text-gray-900 outline-none"
+            />
+
+            <button
+              onClick={handleSearch}
+              className="bg-black px-6 text-white"
+            >
+              <Search />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-6 py-16">
+        <div className="mb-8 flex items-center justify-between">
+          <h2 className="text-3xl font-bold">
+            Sản phẩm nổi bật
+          </h2>
+
+          <Link
+            href="/products"
+            className="text-blue-600"
+          >
+            Xem tất cả →
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {products.map((product) => (
+            <Link
+              key={product.id}
+              href={`/products/${product.slug}`}
+              className="group overflow-hidden rounded-2xl bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+            >
+              <div className="aspect-square overflow-hidden bg-gray-100">
+                <img
+                  src={product.image}
+                  alt={product.name}
+                  className="h-full w-full object-cover transition group-hover:scale-105"
+                />
+              </div>
+
+              <div className="p-5">
+                <h3 className="font-semibold">
+                  {product.name}
+                </h3>
+
+                <div className="mt-3">
+                  {product.salePrice ? (
+                    <>
+                      <span className="text-xl font-bold text-red-600">
+                        {Number(product.salePrice).toLocaleString("vi-VN")}₫
+                      </span>
+
+                      <span className="ml-2 text-sm text-gray-400 line-through">
+                        {Number(product.price).toLocaleString("vi-VN")}₫
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-xl font-bold">
+                      {Number(product.price).toLocaleString("vi-VN")}₫
+                    </span>
+                  )}
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+7. Store giỏ hàng
+Tạo store/cart.ts:
+
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+export type CartItem = {
+  id: string;
+  name: string;
+  price: number;
+  image: string;
+  quantity: number;
+  stock: number;
+};
+
+type CartStore = {
+  items: CartItem[];
+
+  addItem: (item: CartItem) => void;
+  removeItem: (id: string) => void;
+  updateQuantity: (id: string, quantity: number) => void;
+  clearCart: () => void;
+  total: () => number;
+};
+
+export const useCart = create<CartStore>()(
+  persist(
+    (set, get) => ({
+      items: [],
+
+      addItem: (item) =>
+        set((state) => {
+          const existing = state.items.find(
+            (x) => x.id === item.id
+          );
+
+          if (existing) {
+            return {
+              items: state.items.map((x) =>
+                x.id === item.id
+                  ? {
+                      ...x,
+                      quantity: Math.min(
+                        x.quantity + item.quantity,
+                        x.stock
+                      ),
+                    }
+                  : x
+              ),
+            };
+          }
+
+          return {
+            items: [...state.items, item],
+          };
+        }),
+
+      removeItem: (id) =>
+        set((state) => ({
+          items: state.items.filter((x) => x.id !== id),
+        })),
+
+      updateQuantity: (id, quantity) =>
+        set((state) => ({
+          items: state.items.map((x) =>
+            x.id === id
+              ? {
+                  ...x,
+                  quantity: Math.max(
+                    1,
+                    Math.min(quantity, x.stock)
+                  ),
+                }
+              : x
+          ),
+        })),
+
+      clearCart: () => set({ items: [] }),
+
+      total: () =>
+        get().items.reduce(
+          (sum, item) => sum + item.price * item.quantity,
+          0
+        ),
+    }),
+    {
+      name: "shop-cart",
+    }
+  )
+);
+
+8. Trang giỏ hàng
+app/cart/page.tsx
+
+"use client";
+
+import Link from "next/link";
+import { useCart } from "@/store/cart";
+
+export default function CartPage() {
+  const {
+    items,
+    removeItem,
+    updateQuantity,
+    total,
+  } = useCart();
+
+  if (items.length === 0) {
+    return (
+      <div className="mx-auto max-w-5xl px-6 py-24 text-center">
+        <h1 className="text-3xl font-bold">
+          Giỏ hàng đang trống
+        </h1>
+
+        <Link
+          href="/products"
+          className="mt-6 inline-block rounded-lg bg-blue-600 px-6 py-3 text-white"
+        >
+          Tiếp tục mua hàng
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-7xl px-6 py-12">
+      <h1 className="mb-8 text-3xl font-bold">
+        Giỏ hàng
+      </h1>
+
+      <div className="grid gap-8 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className="flex gap-5 rounded-xl bg-white p-5 shadow"
+            >
+              <img
+                src={item.image}
+                className="h-24 w-24 rounded-lg object-cover"
+                alt={item.name}
+              />
+
+              <div className="flex-1">
+                <h2 className="font-semibold">
+                  {item.name}
+                </h2>
+
+                <p className="mt-2 font-bold text-red-600">
+                  {item.price.toLocaleString("vi-VN")}₫
+                </p>
+
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={() =>
+                      updateQuantity(
+                        item.id,
+                        item.quantity - 1
+                      )
+                    }
+                    className="rounded border px-3 py-1"
+                  >
+                    -
+                  </button>
+
+                  <span>{item.quantity}</span>
+
+                  <button
+                    onClick={() =>
+                      updateQuantity(
+                        item.id,
+                        item.quantity + 1
+                      )
+                    }
+                    className="rounded border px-3 py-1"
+                  >
+                    +
+                  </button>
+
+                  <button
+                    onClick={() => removeItem(item.id)}
+                    className="ml-4 text-red-500"
+                  >
+                    Xóa
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <aside className="h-fit rounded-xl bg-white p-6 shadow">
+          <h2 className="text-xl font-bold">
+            Tổng đơn hàng
+          </h2>
+
+          <div className="mt-6 flex justify-between">
+            <span>Tạm tính</span>
+            <strong>
+              {total().toLocaleString("vi-VN")}₫
+            </strong>
+          </div>
+
+          <div className="mt-3 flex justify-between">
+            <span>Phí vận chuyển</span>
+            <span>30.000₫</span>
+          </div>
+
+          <hr className="my-5" />
+
+          <div className="flex justify-between text-xl font-bold">
+            <span>Tổng</span>
+            <span className="text-red-600">
+              {(total() + 30000).toLocaleString("vi-VN")}₫
+            </span>
+          </div>
+
+          <Link
+            href="/checkout"
+            className="mt-6 block rounded-xl bg-blue-600 py-4 text-center font-semibold text-white"
+          >
+            Thanh toán
+          </Link>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+9. Admin dashboard
+app/admin/dashboard/page.tsx
+
+import { db } from "@/lib/db";
+
+export default async function DashboardPage() {
+  const [
+    users,
+    products,
+    orders,
+    revenue,
+  ] = await Promise.all([
+    db.user.count(),
+    db.product.count(),
+    db.order.count(),
+    db.order.aggregate({
+      _sum: {
+        total: true,
+      },
+      where: {
+        paymentStatus: "PAID",
+      },
+    }),
+  ]);
+
+  const cards = [
+    {
+      title: "Khách hàng",
+      value: users,
+    },
+    {
+      title: "Sản phẩm",
+      value: products,
+    },
+    {
+      title: "Đơn hàng",
+      value: orders,
+    },
+    {
+      title: "Doanh thu",
+      value: `${Number(
+        revenue._sum.total || 0
+      ).toLocaleString("vi-VN")}₫`,
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-8">
+      <h1 className="mb-8 text-3xl font-bold">
+        Dashboard
+      </h1>
+
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+        {cards.map((card) => (
+          <div
+            key={card.title}
+            className="rounded-2xl bg-white p-6 shadow"
+          >
+            <p className="text-gray-500">
+              {card.title}
+            </p>
+
+            <p className="mt-3 text-3xl font-bold">
+              {card.value}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
